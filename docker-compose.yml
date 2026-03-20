@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — GeoTrade full-stack orchestration
+# ─────────────────────────────────────────────────────────────────────────────
+version: "3.9"
+
+services:
+  # ── Backend (Node + TypeScript) ──────────────────────────────────────────
+  backend:
+    build:
+      context: ./geotrade-backend
+      dockerfile: Dockerfile
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"
+    environment:
+      - PORT=4000
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-geotrade}:${POSTGRES_PASSWORD:-geotrade}@postgres:5432/${POSTGRES_DB:-geotrade}
+      - ML_SERVICE_URL=http://ml_service:8000
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # ── Frontend stub ────────────────────────────────────────────────────────
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-geotrade}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-geotrade}
+      POSTGRES_DB: ${POSTGRES_DB:-geotrade}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+  # ── ML Service (FastAPI) ─────────────────────────────────────────────────
+  ml_service:
+    build:
+      context: ./ml_service
+      dockerfile: Dockerfile
+    ports:
+      - "${ML_SERVICE_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
