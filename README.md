@@ -1,6 +1,6 @@
 # 🌍 GeoTrade
 
-[![CI](https://github.com/YOUR_USERNAME/geotrade/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/geotrade/actions/workflows/ci.yml)
+[![CI](https://github.com/Kishankumarpandey/Tradeinfo/actions/workflows/ci.yml/badge.svg)](https://github.com/Kishankumarpandey/Tradeinfo/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.12-blue)](https://python.org)
