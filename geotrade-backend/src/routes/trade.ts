@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 import { Router, Request, Response } from 'express';
 import { Ledger } from '../services/ledger';
-import { TickPayload } from '../sim_engine/simulator';
+import { TickPayload } from '../services/binance';
 
 export const tradeRouter = Router();
 export const ledger = new Ledger();
@@ -46,7 +46,7 @@ tradeRouter.post('/trade', (req: Request, res: Response): void => {
     return;
   }
 
-  const result = ledger.executeTrade(userId, countryId, action, amount, country.index);
+  const result = ledger.executeTrade(userId, countryId, action, amount, country.price);
 
   if (!result.success) {
     res.status(400).json({ error: result.message });

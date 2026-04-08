@@ -1,143 +1,120 @@
-// ---------------------------------------------------------------------------
-// src/services/pipeline.ts — News → NLP → Decision pipeline
-// ---------------------------------------------------------------------------
-import { getLatestNews, RawNewsItem } from './news';
-import { analyzeText, NlpResult } from './nlp';
-import { generateDecision, Decision } from './decision';
+import { RawNewsItem } from './news';
+import { analyzeText } from './nlp';
 import { memoryEngine } from './memory';
-import { scoreSignal } from './scoring';
+import { calculateConfidence } from './scoring';
+import { resolveCountryRef } from './countryRegistry';
+import { generateReasoning } from './ollama';
+import { mapCountryToBinanceSymbol } from './assetMapper';
 
 export interface TradeSignal {
+  countryId: string;
   country: string;
-  action: 'buy' | 'sell' | 'hold' | 'strong_buy' | 'strong_sell';
+  lat: number;
+  lng: number;
+  
+  // Real LLM output mappings
+  cause: string;
+  impact: string;
+  asset: string;
+  decision: 'buy' | 'sell' | 'hold' | 'strong_buy' | 'strong_sell';
   confidence: number;
-  strength: 'weak' | 'moderate' | 'strong';
-  score: number;
-  trend: 'bullish' | 'bearish' | 'neutral';
-  trend_strength: number;
-  reason: string;
-  source_headline: string;
-  topic: string;
-  sentiment_score: number;
+  
   timestamp: number;
+  source_headline: string;
 }
 
-export interface PipelineResult {
-  signals: TradeSignal[];
-  processed: number;
-  timestamp: number;
+function isValidTradeSignal(signal: Partial<TradeSignal>): signal is TradeSignal {
+  const hasCountry = Boolean(signal.country && signal.country.trim().length > 0);
+  const hasAsset = Boolean(signal.asset && signal.asset.trim().length > 0);
+  const hasValidCoords = Number.isFinite(signal.lat)
+    && Number.isFinite(signal.lng)
+    && signal.lat! >= -90
+    && signal.lat! <= 90
+    && signal.lng! >= -180
+    && signal.lng! <= 180;
+  const hasConfidence = Number.isFinite(signal.confidence) && signal.confidence! >= 0 && signal.confidence! <= 1;
+
+  return hasCountry && hasAsset && hasValidCoords && hasConfidence;
 }
 
 /**
- * Run the full pipeline:
- *   1. Fetch live news from RSS feeds
- *   2. Process each headline through NLP
- *   3. Generate trade decisions
- *   4. Aggregate and deduplicate per-country (strongest signal wins)
+ * Process a single news item instantly when it arrives via the RSS Webhook/Emitter.
  */
-export async function runPipeline(): Promise<PipelineResult> {
-  // ── 1. Fetch news ─────────────────────────────────────────────────────
-  let newsItems: RawNewsItem[];
-  try {
-    newsItems = await getLatestNews();
-  } catch {
-    console.warn('⚠️ Pipeline: failed to fetch news, returning empty');
-    return { signals: [], processed: 0, timestamp: Date.now() };
+export async function processNewsItem(news: RawNewsItem): Promise<TradeSignal | null> {
+  const startMs = Date.now();
+  console.log(`\n--- [PIPELINE START] NEWS RECEIVED ---`);
+  console.log(`Headline: ${news.title}`);
+  
+  // 1. Base NLP Extraction
+  const text = `${news.title} ${news.description}`;
+  const nlp = analyzeText(text);
+
+  if (!nlp.countryId || Math.abs(nlp.sentiment_score) < 0.1) {
+    console.log(`[PIPELINE] Dropped: No specific country or insufficient sentiment magnitude.`);
+    return null;
   }
 
-  if (newsItems.length === 0) {
-    return { signals: [], processed: 0, timestamp: Date.now() };
+  // 2. Query Local LLM (Ollama)
+  console.log(`[PIPELINE] Querying Ollama LLM for reasoning...`);
+  const ollamaRes = await generateReasoning(news.title, nlp.country, nlp.sentiment_score);
+  
+  if (!ollamaRes) {
+    console.error(`[PIPELINE] Skip: Ollama failed to parse or network error. No fake data fallback allowed.`);
+    return null;
   }
+  
+  console.log(`[PIPELINE] LLM RESPONSE:\nCause: ${ollamaRes.cause}\nImpact: ${ollamaRes.impact}\nAsset: ${ollamaRes.asset}\nAction: ${ollamaRes.decision}`);
 
-  // ── 2. NLP analysis ───────────────────────────────────────────────────
-  const analyzed: { news: RawNewsItem; nlp: NlpResult }[] = [];
-
-  for (const news of newsItems) {
-    const text = `${news.title} ${news.description}`;
-    const nlp = analyzeText(text);
-
-    // Skip if no country detected or negligible sentiment
-    if (nlp.country === 'Unknown' && Math.abs(nlp.sentiment_score) < 0.1) continue;
-
-    analyzed.push({ news, nlp });
-  }
-
-  // ── 3. Generate decisions & Memory integration ─────────────────────────
-  const allSignals: TradeSignal[] = analyzed.map(({ news, nlp }) => {
-    const memTrend = memoryEngine.getTrend(nlp.country);
-
-    const decision = generateDecision({
-      country: nlp.country,
-      sentiment_score: nlp.sentiment_score,
-      impact_level: nlp.impact_level,
-      topic: nlp.topic,
-      memory_trend: memTrend,
-    });
-
-    const scoreData = scoreSignal({
-      sentiment: nlp.sentiment_score,
-      impact_level: nlp.impact_level,
-      memory_trend: memTrend,
-      topic: nlp.topic,
-    });
-
-    // Record into short-term memory
-    memoryEngine.addSignal(nlp.country, {
-      sentiment: nlp.sentiment_score,
-      confidence: decision.confidence,
-      action: decision.action,
-      timestamp: news.timestamp,
-      topic: nlp.topic,
-    });
-
-    return {
-      country: decision.country,
-      action: decision.action,
-      confidence: decision.confidence,
-      strength: decision.strength,
-      score: scoreData.score,
-      trend: memTrend.trend,
-      trend_strength: memTrend.strength,
-      reason: decision.reason,
-      source_headline: news.title,
-      topic: nlp.topic,
-      sentiment_score: nlp.sentiment_score,
-      timestamp: news.timestamp,
-    };
+  // 3. Compute Deterministic Confidence
+  const memTrend = memoryEngine.getTrend(nlp.countryId);
+  const confidence = calculateConfidence({
+    countryId: nlp.countryId,
+    sentiment: nlp.sentiment_score,
+    memory_trend: memTrend,
+    timestamp: news.timestamp
   });
 
-  // ── 4. Aggregate: keep strongest signal per country ───────────────────
-  const byCountry = new Map<string, TradeSignal>();
+  // 4. Resolve Geospatial Data & Real Asset Base
+  const resolvedCountry = resolveCountryRef(nlp.countryId) ?? resolveCountryRef(nlp.country);
+  const lat = typeof resolvedCountry?.lat === 'number' ? resolvedCountry.lat : NaN;
+  const lng = typeof resolvedCountry?.lng === 'number' ? resolvedCountry.lng : NaN;
+  
+  // We explicitly override Asset from LLM with our deterministic Binance mapping string as a strong fallback,
+  // or we keep the LLM asset string and pass the binance symbol down differently.
+  // Actually, LLM "Asset" is usually a description (e.g. "European Equities" or "Oil Contracts").
+  // Frontend charts expect a deterministic string if we want to query a live graph. We use assetMapper.
+  const mappedBinanceAsset = mapCountryToBinanceSymbol(nlp.countryId);
 
-  for (const signal of allSignals) {
-    const existing = byCountry.get(signal.country);
-    if (!existing || signal.confidence > existing.confidence) {
-      byCountry.set(signal.country, signal);
-    }
-  }
-
-  // Sort by score descending
-  const signals = [...byCountry.values()].sort((a, b) => b.score - a.score);
-
-  return {
-    signals,
-    processed: newsItems.length,
-    timestamp: Date.now(),
+  const signal: TradeSignal = {
+    countryId: nlp.countryId,
+    country: nlp.country,
+    lat,
+    lng,
+    cause: ollamaRes.cause,
+    impact: ollamaRes.impact,
+    asset: mappedBinanceAsset, // Deterministic map overrules broad LLM sector names for the chart logic
+    decision: ollamaRes.decision,
+    confidence,
+    timestamp: news.timestamp,
+    source_headline: news.title
   };
-}
 
-/**
- * Run pipeline with fallback: if RSS fails, analyze simulated news instead.
- */
-export async function runPipelineSafe(): Promise<PipelineResult> {
-  const result = await runPipeline();
-
-  // If no signals (RSS might be blocked), return empty gracefully
-  if (result.signals.length === 0) {
-    console.log('📡 Pipeline: no actionable signals from live feeds');
-  } else {
-    console.log(`📡 Pipeline: ${result.signals.length} signals from ${result.processed} articles`);
+  if (!isValidTradeSignal(signal)) {
+    console.warn(`[PIPELINE] Skip: Generated signal was structurally invalid (missing coords/data)`);
+    return null;
   }
 
-  return result;
+  // Record to memory
+  memoryEngine.addSignal(nlp.countryId, {
+    sentiment: nlp.sentiment_score,
+    confidence: signal.confidence,
+    action: signal.decision, // store the LLM decision internally
+    timestamp: signal.timestamp,
+    topic: ollamaRes.impact,
+  });
+
+  console.log(`[PIPELINE] SIGNAL GENERATED -> (${signal.countryId}) Action: ${signal.decision.toUpperCase()}, Confidence: ${(signal.confidence * 100).toFixed(1)}%`);
+  console.log(`--- [PIPELINE END] (${Date.now() - startMs}ms) ---\n`);
+
+  return signal;
 }

@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // src/services/backtest.ts — Backtesting engine for AI signals
 // ---------------------------------------------------------------------------
-import { MarketSimulator, TickPayload } from '../sim_engine/simulator';
+import { BinanceEngine, TickPayload } from '../services/binance';
 import { TradeSignal } from './pipeline';
 
 export interface BacktestTrade {
@@ -22,13 +22,13 @@ export interface BacktestResult {
 }
 
 export class BacktestEngine {
-  private sim: MarketSimulator;
+  private sim: BinanceEngine;
   private openTrades = new Map<string, BacktestTrade>(); // countryId → active trade
   private closedTrades: BacktestTrade[] = [];
   private currentTick = 0;
   private latestPrices = new Map<string, number>();
 
-  constructor(sim: MarketSimulator) {
+  constructor(sim: BinanceEngine) {
     this.sim = sim;
   }
 
@@ -39,7 +39,7 @@ export class BacktestEngine {
   private onTick(payload: TickPayload): void {
     this.currentTick++;
     for (const c of payload.countries) {
-      this.latestPrices.set(c.id, c.index);
+      this.latestPrices.set(c.id, c.price);
     }
 
     // Auto-close trades after 30 ticks (simulated holding period)
@@ -59,18 +59,27 @@ export class BacktestEngine {
    * Ingest a pipeline signal. If actionable, opens a trade or reverses a position.
    */
   ingestSignal(signal: TradeSignal): void {
-    if (signal.action === 'hold') return;
+    if (signal.decision === 'hold') return;
 
-    const currentPrice = this.latestPrices.get(signal.country) ?? 1000;
-    const existing = this.openTrades.get(signal.country);
+    const currentPrice = this.latestPrices.get(signal.countryId);
+    if (typeof currentPrice !== 'number') {
+      console.warn('[backtest] skip signal: missing latest price for countryId', {
+        countryId: signal.countryId,
+        country: signal.country,
+        decision: signal.decision,
+      });
+      return;
+    }
+
+    const existing = this.openTrades.get(signal.countryId);
 
     if (existing) {
       // Reversal logic
       const isLong = existing.action.includes('buy');
-      const newIsLong = signal.action.includes('buy');
+      const newIsLong = signal.decision.includes('buy');
 
       if ((isLong && !newIsLong) || (!isLong && newIsLong)) {
-        this.closeTrade(signal.country, `Reversed by new signal: ${signal.action}`);
+        this.closeTrade(signal.countryId, `Reversed by new signal: ${signal.decision}`);
         this.openTrade(signal, currentPrice);
       }
     } else {
@@ -79,12 +88,12 @@ export class BacktestEngine {
   }
 
   private openTrade(signal: TradeSignal, price: number): void {
-    this.openTrades.set(signal.country, {
-      countryId: signal.country,
-      action: signal.action as 'buy' | 'sell' | 'strong_buy' | 'strong_sell',
+    this.openTrades.set(signal.countryId, {
+      countryId: signal.countryId,
+      action: signal.decision as 'buy' | 'sell' | 'strong_buy' | 'strong_sell',
       entryPrice: price,
       entryTick: this.currentTick,
-      reason: signal.reason,
+      reason: signal.cause,
     });
   }
 

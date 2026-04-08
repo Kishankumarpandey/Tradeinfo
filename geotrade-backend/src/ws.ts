@@ -1,33 +1,21 @@
-// ---------------------------------------------------------------------------
-// src/ws.ts — WebSocket server with ping/pong, subscriptions, tick + insight broadcast
-// ---------------------------------------------------------------------------
 import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
-import { MarketSimulator, TickPayload } from './sim_engine/simulator';
+import { BinanceEngine, TickPayload } from './services/binance';
 import { CandlestickAggregator } from './services/candlestick';
-import { InsightEngine, Insight } from './services/insights';
-import { NewsEngine, NewsItem } from './sim_engine/news';
 
 interface ClientMeta {
   alive: boolean;
   subscriptions: Set<string>; // countryIds
 }
 
-/**
- * Start a WebSocket server attached to the given HTTP server.
- * Returns a broadcast helper so other modules can push messages.
- */
 export function startWebsocketServer(
   server: http.Server,
-  sim: MarketSimulator,
-  candles: CandlestickAggregator,
-  insights: InsightEngine,
-  newsEngine: NewsEngine,
+  sim: BinanceEngine,
+  candles: CandlestickAggregator
 ): (data: unknown) => void {
   const wss = new WebSocketServer({ server, path: '/ws' });
   const clients = new Map<WebSocket, ClientMeta>();
 
-  // ── Ping/pong keep-alive ──────────────────────────────────────────────────
   const HEARTBEAT_MS = 30_000;
   const interval = setInterval(() => {
     for (const [ws, meta] of clients) {
@@ -43,10 +31,19 @@ export function startWebsocketServer(
 
   wss.on('close', () => clearInterval(interval));
 
-  // ── Connection handler ────────────────────────────────────────────────────
   wss.on('connection', (ws: WebSocket) => {
     const meta: ClientMeta = { alive: true, subscriptions: new Set() };
     clients.set(ws, meta);
+    console.info('[ws-server] connected', { totalClients: clients.size, ts: new Date().toISOString() });
+
+    ws.on('close', () => {
+      clients.delete(ws);
+      console.info('[ws-server] disconnected', { remainingClients: clients.size, ts: new Date().toISOString() });
+    });
+
+    ws.on('error', (err) => {
+      console.error('[⚠️  WS ERROR] client error', { error: err.message });
+    });
 
     ws.on('pong', () => {
       meta.alive = true;
@@ -66,12 +63,10 @@ export function startWebsocketServer(
           ws.send(JSON.stringify({ type: 'unsubscribed', countryId: msg.countryId }));
         }
 
-        // Client-initiated ping
         if (msg.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
         }
 
-        // Candle request
         if (msg.type === 'get_candles') {
           const result = candles.getCandles(
             msg.countryId,
@@ -80,16 +75,12 @@ export function startWebsocketServer(
           );
           ws.send(JSON.stringify({ type: 'candles', countryId: msg.countryId, candles: result }));
         }
+
       } catch {
         ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
       }
     });
 
-    ws.on('close', () => {
-      clients.delete(ws);
-    });
-
-    // Welcome message
     ws.send(JSON.stringify({ type: 'welcome', ts: Date.now() }));
   });
 
@@ -100,7 +91,6 @@ export function startWebsocketServer(
       ts: payload.timestamp,
       countries: payload.countries,
     });
-
     for (const [ws] of clients) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(msg);
@@ -116,27 +106,13 @@ export function startWebsocketServer(
     }
   });
 
-  // ── Broadcast insights ────────────────────────────────────────────────────
-  insights.on('insight', (insight: Insight) => {
-    const msg = JSON.stringify(insight);
-    for (const [ws] of clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-    }
-  });
-
-  // ── Broadcast news ────────────────────────────────────────────────────────
-  newsEngine.on('news', (item: NewsItem) => {
-    const msg = JSON.stringify({ type: 'news', ...item });
-    for (const [ws] of clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-    }
-  });
-
   // Generic broadcast function
   function broadcast(data: unknown): void {
     const raw = JSON.stringify(data);
     for (const [ws] of clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.send(raw);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(raw);
+      }
     }
   }
 

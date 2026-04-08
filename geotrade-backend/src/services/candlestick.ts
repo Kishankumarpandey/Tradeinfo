@@ -2,7 +2,7 @@
 // src/services/candlestick.ts — OHLCV candle aggregation
 // ---------------------------------------------------------------------------
 import { EventEmitter } from 'events';
-import { TickPayload } from '../sim_engine/simulator';
+import { TickPayload } from '../services/binance';
 
 export interface Candle {
   ts: number;       // candle open timestamp
@@ -81,17 +81,17 @@ export class CandlestickAggregator extends EventEmitter {
           // Start new candle
           bucket.pending = {
             ts: candleStart,
-            open: country.index,
-            high: country.index,
-            low: country.index,
-            close: country.index,
+            open: country.price,
+            high: country.price,
+            low: country.price,
+            close: country.price,
             volume: country.volume,
           };
         } else {
           // Update current candle
-          bucket.pending.high = Math.max(bucket.pending.high, country.index);
-          bucket.pending.low = Math.min(bucket.pending.low, country.index);
-          bucket.pending.close = country.index;
+          bucket.pending.high = Math.max(bucket.pending.high, country.price);
+          bucket.pending.low = Math.min(bucket.pending.low, country.price);
+          bucket.pending.close = country.price;
           bucket.pending.volume += country.volume;
         }
       }

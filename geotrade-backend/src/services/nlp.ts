@@ -2,11 +2,25 @@
 // src/services/nlp.ts — Lightweight NLP processor (keyword-based)
 // ---------------------------------------------------------------------------
 
+import { resolveCountryRef } from './countryRegistry';
+
 export interface NlpResult {
-  country: string;          // detected country name or "Unknown"
+  country: string;          // legacy compatibility: detected country name or "Unknown"
+  countryId: string | null;
+  countryName: string;
   sentiment_score: number;  // -1.0 to +1.0
   topic: string;            // detected topic category
   impact_level: 'low' | 'medium' | 'high';
+  matchedKeywords: {
+    countries: string[];
+    topics: string[];
+    sentiment: Array<{ keyword: string; weight: number }>;
+  };
+  confidenceContribution: {
+    sentiment: number;
+    topic: number;
+    country: number;
+  };
 }
 
 // ── Country detection dictionary ────────────────────────────────────────────
@@ -128,10 +142,14 @@ export function analyzeText(text: string): NlpResult {
   // ── Detect country ────────────────────────────────────────────────────
   let country = 'Unknown';
   let countryScore = 0;
+  const matchedCountryKeywords: string[] = [];
   for (const entry of COUNTRY_KEYWORDS) {
     let matchCount = 0;
     for (const kw of entry.keywords) {
-      if (lowerText.includes(kw.toLowerCase())) matchCount++;
+      if (lowerText.includes(kw.toLowerCase())) {
+        matchCount++;
+        matchedCountryKeywords.push(kw);
+      }
     }
     if (matchCount > countryScore) {
       countryScore = matchCount;
@@ -139,20 +157,25 @@ export function analyzeText(text: string): NlpResult {
     }
   }
 
+  const resolvedCountry = resolveCountryRef(country);
+
   // ── Compute sentiment score ───────────────────────────────────────────
   let sentiment = 0;
   let matchedKeywords = 0;
+  const matchedSentimentKeywords: Array<{ keyword: string; weight: number }> = [];
 
   for (const { word, weight } of POSITIVE_KEYWORDS) {
     if (lowerText.includes(word)) {
       sentiment += weight;
       matchedKeywords++;
+      matchedSentimentKeywords.push({ keyword: word, weight });
     }
   }
   for (const { word, weight } of NEGATIVE_KEYWORDS) {
     if (lowerText.includes(word)) {
       sentiment += weight; // weight is already negative
       matchedKeywords++;
+      matchedSentimentKeywords.push({ keyword: word, weight });
     }
   }
 
@@ -165,10 +188,14 @@ export function analyzeText(text: string): NlpResult {
   // ── Detect topic ──────────────────────────────────────────────────────
   let topic = 'general';
   let topicScore = 0;
+  const matchedTopicKeywords: string[] = [];
   for (const entry of TOPIC_KEYWORDS) {
     let matchCount = 0;
     for (const kw of entry.keywords) {
-      if (lowerText.includes(kw.toLowerCase())) matchCount++;
+      if (lowerText.includes(kw.toLowerCase())) {
+        matchCount++;
+        matchedTopicKeywords.push(kw);
+      }
     }
     if (matchCount > topicScore) {
       topicScore = matchCount;
@@ -192,7 +219,26 @@ export function analyzeText(text: string): NlpResult {
     impact_level = 'medium';
   }
 
-  return { country, sentiment_score: Math.round(sentiment_score * 1000) / 1000, topic, impact_level };
+  const structured: NlpResult = {
+    country: resolvedCountry?.name ?? country,
+    countryId: resolvedCountry?.id ?? null,
+    countryName: resolvedCountry?.name ?? country,
+    sentiment_score: Math.round(sentiment_score * 1000) / 1000,
+    topic,
+    impact_level,
+    matchedKeywords: {
+      countries: matchedCountryKeywords.slice(0, 8),
+      topics: matchedTopicKeywords.slice(0, 8),
+      sentiment: matchedSentimentKeywords.slice(0, 10),
+    },
+    confidenceContribution: {
+      sentiment: Math.round(Math.abs(sentiment_score) * 100) / 100,
+      topic: Math.min(1, topicScore / 3),
+      country: Math.min(1, countryScore / 3),
+    },
+  };
+
+  return structured;
 }
 
 /**

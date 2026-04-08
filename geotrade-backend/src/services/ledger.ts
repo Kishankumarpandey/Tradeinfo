@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // src/services/ledger.ts — In-memory trading ledger with leaderboard (v2)
 // ---------------------------------------------------------------------------
-import { TickPayload } from '../sim_engine/simulator';
+import { TickPayload } from '../services/binance';
 
 export interface Position {
   countryId: string;
@@ -38,14 +38,10 @@ export interface LeaderboardEntry {
 
 const INITIAL_CASH = 100_000;
 
-/**
- * In-memory ledger with profit tracking and leaderboard.
- */
 export class Ledger {
   private portfolios = new Map<string, Portfolio>();
   private latestTick: TickPayload | null = null;
 
-  /** Update the latest tick (call on every simulator tick) */
   updatePrices(tick: TickPayload): void {
     this.latestTick = tick;
   }
@@ -62,7 +58,6 @@ export class Ledger {
     return { ...p, positions: [...p.positions] };
   }
 
-  /** Calculate unrealized P&L for a user based on latest prices */
   getProfit(userId: string): number {
     const portfolio = this.getOrCreate(userId);
     let totalValue = portfolio.cash;
@@ -75,16 +70,14 @@ export class Ledger {
     return totalValue - INITIAL_CASH;
   }
 
-  /** Get the current price from latest tick, or fallback to avgCost */
   private getCurrentPrice(countryId: string): number {
     if (this.latestTick) {
       const country = this.latestTick.countries.find((c) => c.id === countryId);
-      if (country) return country.index;
+      if (country) return country.price;
     }
     return 0;
   }
 
-  /** Get ranked leaderboard of all users */
   getLeaderboard(): LeaderboardEntry[] {
     const entries: LeaderboardEntry[] = [];
 
@@ -96,13 +89,11 @@ export class Ledger {
       });
     }
 
-    // Sort by profit descending
     entries.sort((a, b) => b.profit - a.profit);
 
-    // Assign ranks (handle ties)
     for (let i = 0; i < entries.length; i++) {
       if (i > 0 && entries[i].profit === entries[i - 1].profit) {
-        entries[i].rank = entries[i - 1].rank; // tied rank
+        entries[i].rank = entries[i - 1].rank; 
       } else {
         entries[i].rank = i + 1;
       }

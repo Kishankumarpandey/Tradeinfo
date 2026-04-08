@@ -15,7 +15,7 @@ export class SignalHistoryService {
    * Add a new signal to history.
    */
   addSignal(signal: TradeSignal): void {
-    const countryId = signal.country;
+    const countryId = signal.countryId;
     let list = this.historyMap.get(countryId);
     if (!list) {
       list = [];
